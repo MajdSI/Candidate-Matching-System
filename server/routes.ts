@@ -1,9 +1,26 @@
 import type { Express } from "express";
+import express from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { jobDescriptionSchema } from "@shared/schema";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 export async function registerRoutes(app: Express): Promise<Server> {
+  // Explicitly return 404 for favicon requests
+  app.get('/favicon.ico', (req, res) => {
+    res.status(404).end();
+  });
+  app.get('/favicon.png', (req, res) => {
+    res.status(404).end();
+  });
+
+  // Serve static CV files
+  app.use('/cvs', express.static(path.join(__dirname, 'public/cvs')));
+  
   // Get all candidates sorted by match score
   app.get("/api/candidates", async (_req, res) => {
     try {

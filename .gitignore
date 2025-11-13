@@ -1,13 +1,35 @@
+# Node dependencies
 node_modules
 dist
+
+# OS files
 .DS_Store
-server/public
+
+# Vite
 vite.config.ts.*
 *.tar.gz
 
+# Environment / secrets
 .env
 *.env
 **/.env
 **/.env.local
 
+# Python cache
 __pycache__/
+**/__pycache__/
+
+# Replit machine files (safe to ignore)
+.replit
+.local/
+.local/state/
+.local/state/replit/
+.local/state/replit/agent/
+
+# Ignore Python API cache/compiled files
+server/python-api/app/__pycache__/
+server/python-api/**/__pycache__/
+
+# Server public uploads (optional; contains PDFs!)
+server/public
+server/server/public/cvs/pdfs/

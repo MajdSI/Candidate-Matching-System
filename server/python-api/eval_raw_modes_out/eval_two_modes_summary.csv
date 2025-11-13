@@ -1,0 +1,5 @@
+mode,alpha,candidates_topk,topk,MRR_mean,nDCG_mean,Recall_mean
+summary,0.7,100,5,1.0,1.0,1.0
+summary,0.7,200,5,1.0,1.0,1.0
+summary,0.8,100,5,1.0,1.0,1.0
+summary,0.8,200,5,1.0,1.0,1.0

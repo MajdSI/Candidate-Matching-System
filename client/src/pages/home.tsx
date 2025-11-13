@@ -8,8 +8,8 @@ import ResultsScreen from "@/components/results-screen";
 import IntroAnimation from "@/components/intro-animation";
 import TutorialFlow from "@/components/tutorial-flow";
 import { Sparkles, AlertCircle } from "lucide-react";
-import { apiRequest } from "@/lib/queryClient";
-import type { Candidate } from "@shared/schema";
+import { transformMatchResToCandidate } from "@/lib/utils";
+import type { Candidate, MatchReq, MatchRes, ExplainReq } from "@shared/schema";
 
 export default function Home() {
   const [jobDescription, setJobDescription] = useState("");
@@ -17,26 +17,82 @@ export default function Home() {
   const [error, setError] = useState("");
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [loadingStartTime, setLoadingStartTime] = useState<number>(0);
+  const [explanationLoading, setExplanationLoading] = useState<Set<string>>(new Set()); // Track which candidates are loading explanations
 
   const analyzeMutation = useMutation({
     mutationFn: async (description: string) => {
-      const response = await apiRequest<{ candidates: Candidate[] }>(
-        "POST",
-        "/api/analyze",
-        { description }
-      );
-      return response;
+      // Prepare request body - use async_explain for better UX
+      const requestBody: MatchReq = {
+        jd_text: description,
+        jd_col: "clean_jd",
+        cv_col: "cv_summary",
+        resolve_jd_to_col: "jd_summary",
+        topk: 5,
+        candidate_topk:200,
+        rrf_k: 60,
+        threshold: null,
+        cosine_floor: 0.0,
+        alpha: 0.5,
+        batch_size: 32,
+        async_explain: false  // Return results immediately, fetch explanations separately
+      };
+
+      // Call Python backend API directly
+      const response = await fetch("http://localhost:8001/match", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestBody),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Backend API error: ${response.status} - ${errorText}`);
+      }
+
+      const matchResults: MatchRes[] = await response.json();
+      
+      // Debug: Print the full received response
+      console.log("=== BACKEND API RESPONSE (DEBUG) ===");
+      console.log("Full Response:", JSON.stringify(matchResults, null, 2));
+      console.log("Number of results:", matchResults.length);
+      console.log("Ranks received:", matchResults.map(m => ({ rank: m.rank, cv_uid: m.cv_uid, final_score: m.final_score })));
+      console.log("Sample result (first):", matchResults[0] ? JSON.stringify(matchResults[0], null, 2) : "No results");
+      console.log("=== END DEBUG ===");
+      
+      // Verify we got exactly 5 candidates in rank order
+      if (matchResults.length !== 5) {
+        console.warn(`WARNING: Expected 5 candidates, got ${matchResults.length}`);
+      }
+      const ranks = matchResults.map(m => m.rank).sort((a, b) => a - b);
+      if (ranks.toString() !== "1,2,3,4,5") {
+        console.warn(`WARNING: Ranks are not 1,2,3,4,5. Got: ${ranks}`);
+      }
+      
+      // Transform backend response to Candidate format
+      const candidates = matchResults.map(transformMatchResToCandidate);
+      
+      // Debug: Print transformed candidates
+      console.log("=== TRANSFORMED CANDIDATES (DEBUG) ===");
+      console.log("Transformed candidates:", JSON.stringify(candidates, null, 2));
+      console.log("=== END DEBUG ===");
+      
+      return { candidates, jd_text: description, matchResults };
     },
-    onSuccess: (data) => {
+    onSuccess: async (data) => {
       setCandidates(data.candidates);
       
-      // Show loading screen for at least 2 seconds for better UX
+      // Show loading screen for at least 1 second for better UX
       const elapsed = Date.now() - loadingStartTime;
-      const minLoadingTime = 2000;
+      const minLoadingTime = 1000;
       const remainingTime = Math.max(0, minLoadingTime - elapsed);
       
       setTimeout(() => {
         setCurrentScreen("results");
+        
+        // Fetch explanations asynchronously after showing results
+        fetchExplanations(data.jd_text, data.matchResults, data.candidates);
       }, remainingTime);
     },
     onError: (err) => {
@@ -45,7 +101,90 @@ export default function Home() {
     },
   });
 
+  // Function to fetch explanations asynchronously
+  const fetchExplanations = async (
+    jdText: string,
+    matchResults: MatchRes[],
+    currentCandidates: Candidate[]
+  ) => {
+    console.log("=== FETCHING EXPLANATIONS ===");
+    console.log("Starting explanation fetch for", currentCandidates.length, "candidates");
+    
+    // Mark all candidates as loading explanations
+    setExplanationLoading(new Set(currentCandidates.map(c => c.id)));
+    
+    try {
+      // Prepare explain request - IMPORTANT: Use matchResults in the SAME ORDER as received
+      // matchResults are already sorted by rank (1, 2, 3, 4, 5) from the /match endpoint
+      console.log("=== PREPARING EXPLAIN REQUEST ===");
+      console.log("Candidates being sent for explanation:", matchResults.map(mr => ({
+        rank: mr.rank,
+        cv_uid: mr.cv_uid,
+        final_score: mr.final_score
+      })));
+      
+      const explainReq: ExplainReq = {
+        jd_text: jdText,
+        candidates: matchResults.map(mr => ({
+          cv_uid: mr.cv_uid,
+          cv_text: mr.cv_text || "",
+          rank: mr.rank,  // CRITICAL: Preserve rank to verify order
+          final_score: mr.final_score,
+          ce_score: mr.ce_score,
+          hybrid_score_0_100: mr.hybrid_score_0_100,
+          cv_id: mr.cv_id,
+        })),
+        max_reasons: 4,
+        per_cv_char_budget: 4000,
+      };
+
+      const response = await fetch("http://localhost:8001/explain", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(explainReq),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch explanations: ${response.status}`);
+      }
+
+      const explainedResults: MatchRes[] = await response.json();
+      
+      console.log("=== EXPLANATIONS RECEIVED ===");
+      console.log("Explanations:", JSON.stringify(explainedResults, null, 2));
+      
+      // Update candidates with explanations
+      setCandidates(prevCandidates => {
+        return prevCandidates.map(candidate => {
+          const explained = explainedResults.find(
+            er => er.cv_uid.toString() === candidate.id
+          );
+          if (explained?.explanation) {
+            return {
+              ...candidate,
+              explanation: explained.explanation,
+            } as Candidate & { explanation?: MatchRes['explanation'] };
+          }
+          return candidate;
+        });
+      });
+      
+      // Clear loading state
+      setExplanationLoading(new Set());
+    } catch (error) {
+      console.error("Failed to fetch explanations:", error);
+      // Clear loading state even on error
+      setExplanationLoading(new Set());
+      // Optionally show error message to user
+    }
+  };
+
   const handleAnalyze = () => {
+    console.log("=== ANALYZE BUTTON CLICKED ===");
+    console.log("Job Description Length:", jobDescription.length);
+    
     setError("");
     
     if (!jobDescription.trim()) {
@@ -58,6 +197,7 @@ export default function Home() {
       return;
     }
 
+    console.log("Starting analysis...");
     setLoadingStartTime(Date.now());
     setCurrentScreen("loading");
     analyzeMutation.mutate(jobDescription);

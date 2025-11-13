@@ -21,7 +21,7 @@ export const candidates = pgTable("candidates", {
   projects: text("projects").array().notNull(),
 });
 
-// Type definitions for CV details
+// Type definitions
 export type Education = {
   degree: string;
   school: string;
@@ -40,11 +40,75 @@ export const insertCandidateSchema = createInsertSchema(candidates).omit({
 });
 
 export type InsertCandidate = z.infer<typeof insertCandidateSchema>;
+
+// Base candidate row type
 export type Candidate = typeof candidates.$inferSelect;
 
-// Job description analysis request
-export const jobDescriptionSchema = z.object({
-  description: z.string().min(10, "Job description must be at least 10 characters"),
-});
+// ---------- Backend API Types ----------
+export interface MatchRes {
+  rank: number;
+  final_score: number;
+  ce_score: number;
+  hybrid_score_0_100: number;
+  cv_uid: number;
+  cv_id?: number | null;
+  cv_text: string;
+  cv_summary?: string | null;
+  clean_cv_full?: string | null;
+  explanation?: {
+    reasons?: string[];
+    matches?: string[];
+    raw?: string;
+    error?: string;
+  } | null;
+}
 
-export type JobDescription = z.infer<typeof jobDescriptionSchema>;
+// ----------- Request DTOs -----------
+export interface MatchReq {
+  jd_text: string;
+  jd_col: string;
+  cv_col: string;
+  resolve_jd_to_col: string;
+  topk?: number;
+  candidate_topk?: number;
+  rrf_k?: number;
+  threshold?: number | null;
+  cosine_floor?: number;
+  alpha?: number;
+  batch_size?: number;
+  cv_text_pref?: string;
+  async_explain?: boolean;
+}
+
+export interface ExplainReq {
+  jd_text: string;
+  candidates: Array<{
+    cv_uid: number;
+    cv_text: string;
+    rank: number;
+    [key: string]: any;
+  }>;
+  llm_model?: string;
+  max_reasons?: number;
+  per_cv_char_budget?: number;
+}
+
+
+// ---------- UI-friendly type ----------
+export interface CandidateWithExplanation extends Candidate {
+  cv_id?: number | null;  // added
+  explanation?: {
+    reasons?: string[];
+    matches?: string[];
+    raw?: string;
+    error?: string;
+  } | null;               // added
+}
+
+
+export type UICandidate = Candidate & {
+  cv_id?: number | null;
+  cv_uid?: number;
+  matchScore: number;  // convenient alias for final_score * 100
+  explanation?: MatchRes["explanation"] | null;
+};
